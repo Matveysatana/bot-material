@@ -10,7 +10,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, CommandObject
 from aiogram.enums import ChatMemberStatus
 from dotenv import load_dotenv
 
@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")       # @username или -100...
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_URL = os.getenv("CHANNEL_URL")
 
 PDF_PATH = os.path.join("files", "checklist.pdf")
@@ -43,7 +43,7 @@ router = Router()
 dp.include_router(router)
 
 # ─────────────────────────────────────────────
-# Тексты (вынесены отдельно для удобства)
+# Тексты
 # ─────────────────────────────────────────────
 
 WELCOME_TEXT = (
@@ -52,43 +52,39 @@ WELCOME_TEXT = (
     "Рад видеть тебя здесь!\n"
     "\n"
     "🎁 У меня для тебя <b>бесплатный подарок</b>:\n"
-    "📋 <b>«Чек-лист ТОП-10 ошибок, которые убивают конверсию вашего сайта»</b>\n"
     "\n"
-    "Чтобы получить его — нужно быть подписанным на наш канал.\n"
-    "Сейчас проверю… ⏳"
+    "📋 <b>«Чек-лист ТОП-10 ошибок, которые убивают\n"
+    "конверсию вашего сайта»</b>\n"
+    "\n"
+    "Нажми кнопку ниже, чтобы получить его 👇"
 )
 
 NOT_SUBSCRIBED_TEXT = (
     "😔 Ты пока <b>не подписан</b> на наш канал.\n"
     "\n"
-    "Подпишись 👇 и нажми <b>«✅ Я подписался»</b>, чтобы получить чек-лист!"
+    "Подпишись на канал и нажми\n"
+    "<b>«🔄 Проверить подписку»</b> 👇"
 )
 
-ALREADY_SUBSCRIBED_TEXT = (
-    "🎉 Отлично, <b>{name}</b>! Ты подписан на канал!\n"
+SUCCESS_TEXT = (
+    "🎉 Отлично, <b>{name}</b>!\n"
+    "\n"
+    "Подписка подтверждена ✅\n"
     "\n"
     "Держи свой подарок 👇\n"
     "\n"
-    "📋 <b>«Чек-лист ТОП-10 ошибок, которые убивают конверсию вашего сайта»</b>\n"
+    "📋 <b>«Чек-лист ТОП-10 ошибок, которые убивают\n"
+    "конверсию вашего сайта»</b>\n"
     "\n"
     "Изучай, внедряй и увеличивай конверсию! 🚀"
 )
 
-CHECK_SUCCESS_TEXT = (
-    "🎉 Супер, <b>{name}</b>! Подписка подтверждена!\n"
+STILL_NOT_SUBSCRIBED_TEXT = (
+    "🤔 Подписки всё ещё нет…\n"
     "\n"
-    "Вот твой чек-лист 👇\n"
-    "\n"
-    "📋 <b>«ТОП-10 ошибок, которые убивают конверсию вашего сайта»</b>\n"
-    "\n"
-    "Применяй и наблюдай за ростом показателей! 📈"
-)
-
-CHECK_FAIL_TEXT = (
-    "🤔 Хм, подписки всё ещё нет…\n"
-    "\n"
-    "Убедись, что ты нажал <b>«Join»</b> / <b>«Подписаться»</b> в канале,\n"
-    "а потом снова нажми <b>«✅ Я подписался»</b>."
+    "Убедись, что ты нажал <b>«Подписаться»</b>\n"
+    "в канале, а потом нажми\n"
+    "<b>«🔄 Проверить подписку»</b> ещё раз 👇"
 )
 
 
@@ -96,7 +92,21 @@ CHECK_FAIL_TEXT = (
 # Клавиатуры
 # ─────────────────────────────────────────────
 
-def get_subscribe_keyboard() -> InlineKeyboardMarkup:
+def welcome_keyboard() -> InlineKeyboardMarkup:
+    """Стартовая клавиатура с кнопкой получения материала."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎁 Получить материал",
+                    callback_data="get_material",
+                )
+            ],
+        ]
+    )
+
+
+def subscribe_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура: перейти на канал + проверить подписку."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -108,7 +118,7 @@ def get_subscribe_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="✅ Я подписался",
+                    text="🔄 Проверить подписку",
                     callback_data="check_subscription",
                 )
             ],
@@ -127,7 +137,6 @@ async def is_user_subscribed(user_id: int) -> bool:
             chat_id=CHANNEL_ID,
             user_id=user_id,
         )
-        # Статусы, которые считаем «подписан»
         return member.status in (
             ChatMemberStatus.MEMBER,
             ChatMemberStatus.ADMINISTRATOR,
@@ -142,31 +151,26 @@ async def is_user_subscribed(user_id: int) -> bool:
 # Отправка PDF
 # ─────────────────────────────────────────────
 
-async def send_pdf(message_or_callback, user_name: str):
-    """Отправляет PDF-файл пользователю."""
+async def send_pdf(callback: CallbackQuery, name: str):
+    """Удаляет старое сообщение и отправляет PDF."""
+    # Удаляем сообщение с кнопками
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
-    # Определяем, откуда пришёл вызов
-    if isinstance(message_or_callback, CallbackQuery):
-        chat_id = message_or_callback.message.chat.id
-        send = message_or_callback.message.answer_document
-        send_text = message_or_callback.message.answer
-    else:
-        chat_id = message_or_callback.chat.id
-        send = message_or_callback.answer_document
-        send_text = message_or_callback.answer
+    # Текст успеха
+    await callback.message.answer(
+        SUCCESS_TEXT.format(name=name),
+        parse_mode="HTML",
+    )
 
-    # Формируем текст
-    if isinstance(message_or_callback, CallbackQuery):
-        text = CHECK_SUCCESS_TEXT.format(name=user_name)
-    else:
-        text = ALREADY_SUBSCRIBED_TEXT.format(name=user_name)
-
-    # Отправляем текст
-    await send_text(text, parse_mode="HTML")
-
-    # Отправляем файл
-    document = FSInputFile(PDF_PATH, filename="Чек-лист_ТОП-10_ошибок_конверсии.pdf")
-    await send(
+    # Отправляем PDF
+    document = FSInputFile(
+        PDF_PATH,
+        filename="Чек-лист_ТОП-10_ошибок_конверсии.pdf",
+    )
+    await callback.message.answer_document(
         document=document,
         caption="📎 Твой чек-лист готов. Приятного изучения!",
         parse_mode="HTML",
@@ -178,39 +182,56 @@ async def send_pdf(message_or_callback, user_name: str):
 # ─────────────────────────────────────────────
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, command: CommandObject):
     user = message.from_user
-    # Берём имя: first_name, а если нет — username, а если нет — "друг"
     name = user.first_name or (f"@{user.username}" if user.username else "друг")
+    source = command.args
 
     logger.info(
-        f"Пользователь {user.id} ({user.username or 'no_username'}) нажал /start"
+        f"Пользователь {user.id} ({user.username or 'no_username'}) "
+        f"нажал /start (source={source})"
     )
 
-    # Приветствие
     await message.answer(
         WELCOME_TEXT.format(name=name),
         parse_mode="HTML",
+        reply_markup=welcome_keyboard(),
     )
 
-    # Небольшая пауза для эффекта «проверки»
-    await asyncio.sleep(1.5)
+
+# ─────────────────────────────────────────────
+# Кнопка «Получить материал»
+# ─────────────────────────────────────────────
+
+@router.callback_query(F.data == "get_material")
+async def get_material_callback(callback: CallbackQuery):
+    user = callback.from_user
+    name = user.first_name or (f"@{user.username}" if user.username else "друг")
+
+    logger.info(f"Пользователь {user.id} нажал «Получить материал»")
 
     # Проверяем подписку
     subscribed = await is_user_subscribed(user.id)
 
     if subscribed:
-        await send_pdf(message, name)
+        # Подписан — выдаём PDF
+        await send_pdf(callback, name)
     else:
-        await message.answer(
+        # Не подписан — просим подписаться
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        await callback.message.answer(
             NOT_SUBSCRIBED_TEXT,
             parse_mode="HTML",
-            reply_markup=get_subscribe_keyboard(),
+            reply_markup=subscribe_keyboard(),
         )
 
 
 # ─────────────────────────────────────────────
-# Хэндлер кнопки «Я подписался»
+# Кнопка «Проверить подписку»
 # ─────────────────────────────────────────────
 
 @router.callback_query(F.data == "check_subscription")
@@ -218,29 +239,27 @@ async def check_subscription_callback(callback: CallbackQuery):
     user = callback.from_user
     name = user.first_name or (f"@{user.username}" if user.username else "друг")
 
-    logger.info(
-        f"Пользователь {user.id} ({user.username or 'no_username'}) "
-        f"нажал «Я подписался»"
-    )
+    logger.info(f"Пользователь {user.id} нажал «Проверить подписку»")
 
     subscribed = await is_user_subscribed(user.id)
 
     if subscribed:
-        # Удаляем старое сообщение с кнопками
-        await callback.message.delete()
-        # Отправляем PDF
+        # Подписался — выдаём PDF
         await send_pdf(callback, name)
     else:
+        # Всё ещё не подписан
         await callback.answer(
-            "❌ Подписка не найдена. Подпишись на канал!",
+            "❌ Подписка не найдена!",
             show_alert=True,
         )
-        # Обновляем сообщение (на случай если текст изменился)
-        await callback.message.edit_text(
-            CHECK_FAIL_TEXT,
-            parse_mode="HTML",
-            reply_markup=get_subscribe_keyboard(),
-        )
+        try:
+            await callback.message.edit_text(
+                STILL_NOT_SUBSCRIBED_TEXT,
+                parse_mode="HTML",
+                reply_markup=subscribe_keyboard(),
+            )
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────
@@ -250,12 +269,10 @@ async def check_subscription_callback(callback: CallbackQuery):
 async def main():
     logger.info("🤖 Бот запускается...")
 
-    # Проверяем, что PDF на месте
     if not os.path.exists(PDF_PATH):
-        logger.error(f"❌ Файл {PDF_PATH} не найден! Положи PDF в папку files/")
+        logger.error(f"❌ Файл {PDF_PATH} не найден!")
         return
 
-    # Удаляем вебхук (на случай если был) и запускаем polling
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Бот запущен и готов к работе!")
     await dp.start_polling(bot)
