@@ -14,3 +14,6 @@ __pycache__/
 
 # Системные файлы
 .DS_Store
+
+node_modules
+.env
