@@ -10,8 +10,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.enums import ChatMemberStatus
+from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,6 +20,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_URL = os.getenv("CHANNEL_URL")
+SITE_URL = "https://satanovski.ru/"
 
 PDF_PATH = os.path.join("files", "checklist.pdf")
 
@@ -33,11 +35,13 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+cached_pdf_file_id: str | None = None
+
 WELCOME_TEXT = (
     "👋 Привет, <b>{name}</b>!\n"
     "\n"
     "Меня зовут <b>Матвей Сатановский</b> — мне 16, "
-    "и я занимаюсь разработкой, дизайном"
+    "и я занимаюсь разработкой, дизайном "
     "и видеомонтажом для бизнес-проектов.\n"
     "\n"
     "<blockquote>"
@@ -47,14 +51,13 @@ WELCOME_TEXT = (
     " поэтому работаю с полной отдачей."
     " Путешествую, читаю, тренируюсь, генерирую идеи —"
     " и всё это отражается в том, что я создаю.\n\n"
-    "Люблю жизнь и наслаждаюсь ей ❤️ \n"
-
+    "Люблю жизнь и наслаждаюсь ей ❤️\n"
     "</blockquote>\n"
     "\n"
     "🎁 Специально для тебя я подготовил\n"
     "<b>бесплатный материал</b>:\n"
     "\n"
-    "📋 <b>«Чек-лист ТОП-10 ошибок, которые"
+    "📋 <b>«Чек-лист ТОП-10 ошибок, которые "
     "убивают конверсию вашего сайта»</b>\n"
     "\n"
     "Внутри:\n"
@@ -104,6 +107,24 @@ STILL_NOT_SUBSCRIBED_TEXT = (
     "<b>«🔄 Проверить подписку»</b> 👇"
 )
 
+SITE_TEXT = (
+    "<b>Официальный сайт Матвея Сатановского</b>\n"
+    "\n"
+    "Здесь ты найдёшь всё, что я делаю:\n"
+    "\n"
+    "🎬 <b>Видеомонтаж</b> — динамичные ролики "
+    "для бизнеса, рилсы, клипы и контент для соцсетей\n\n"
+    "💻 <b>Веб-разработка</b> — сайты, лендинги "
+    "и боты, которые приносят заявки\n\n"
+    "🎨 <b>Дизайн</b> — визуальные решения, "
+    "которые выделяют бренд среди конкурентов\n\n"
+    "\n"
+    "Можешь посмотреть портфолио, изучить услуги "
+    "и сразу оставить заявку.\n"
+    "\n"
+    "👇 Переходи и смотри сам:"
+)
+
 LOADING_TEXT = "⏳ Секунду, проверяю..."
 FADE_TEXT = "⠀"
 
@@ -140,6 +161,19 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def site_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🌐 Перейти на сайт",
+                    url=SITE_URL,
+                )
+            ],
+        ]
+    )
+
+
 async def is_user_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(
@@ -157,11 +191,6 @@ async def is_user_subscribed(user_id: int) -> bool:
 
 
 async def fade_out(message) -> None:
-    """
-    Анимация исчезновения через редактирование.
-    Telegram на телефоне даёт лёгкую анимацию при edit —
-    именно это создаёт эффект плавного исчезновения.
-    """
     try:
         await message.edit_text(LOADING_TEXT, parse_mode="HTML")
     except Exception:
@@ -185,6 +214,8 @@ async def fade_out(message) -> None:
 
 
 async def send_pdf(chat_id: int, name: str) -> None:
+    global cached_pdf_file_id
+
     await bot.send_message(
         chat_id=chat_id,
         text=SUCCESS_TEXT.format(name=name),
@@ -193,22 +224,59 @@ async def send_pdf(chat_id: int, name: str) -> None:
 
     await asyncio.sleep(0.5)
 
-    document = FSInputFile(
-        PDF_PATH,
-        filename="Чек-лист_ТОП-10_ошибок_конверсии.pdf",
-    )
-    await bot.send_document(
-        chat_id=chat_id,
-        document=document,
-        caption="📎 Твой чек-лист готов. Приятного изучения!",
-        parse_mode="HTML",
-    )
+    if cached_pdf_file_id:
+        await bot.send_document(
+            chat_id=chat_id,
+            document=cached_pdf_file_id,
+            caption="📎 Твой чек-лист готов. Приятного изучения!",
+            parse_mode="HTML",
+        )
+        logger.info(f"📦 PDF отправлен из кэша пользователю {chat_id}")
+
+    else:
+        document = FSInputFile(
+            PDF_PATH,
+            filename="Чек-лист_ТОП-10_ошибок_конверсии.pdf",
+        )
+        msg = await bot.send_document(
+            chat_id=chat_id,
+            document=document,
+            caption="📎 Твой чек-лист готов. Приятного изучения!",
+            parse_mode="HTML",
+        )
+        cached_pdf_file_id = msg.document.file_id
+        logger.info(
+            f"📦 PDF отправлен с диска, file_id сохранён. "
+            f"Пользователь: {chat_id}"
+        )
+
+
+async def health_check(request: web.Request) -> web.Response:
+    return web.Response(text="OK")
+
+
+async def start_fake_server() -> None:
+    port = int(os.getenv("PORT", 10000))
+
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject):
     user = message.from_user
-    name = user.first_name or (f"@{user.username}" if user.username else "друг")
+    name = user.first_name or (
+        f"@{user.username}" if user.username else "друг"
+    )
 
     logger.info(
         f"Пользователь {user.id} ({user.username or 'no_username'}) "
@@ -222,10 +290,28 @@ async def cmd_start(message: Message, command: CommandObject):
     )
 
 
+@router.message(Command("site"))
+async def cmd_site(message: Message):
+    user = message.from_user
+
+    logger.info(
+        f"Пользователь {user.id} ({user.username or 'no_username'}) "
+        f"нажал /site"
+    )
+
+    await message.answer(
+        SITE_TEXT,
+        parse_mode="HTML",
+        reply_markup=site_keyboard(),
+    )
+
+
 @router.callback_query(F.data == "get_material")
 async def get_material_callback(callback: CallbackQuery):
     user = callback.from_user
-    name = user.first_name or (f"@{user.username}" if user.username else "друг")
+    name = user.first_name or (
+        f"@{user.username}" if user.username else "друг"
+    )
 
     logger.info(f"Пользователь {user.id} нажал «Получить материал»")
 
@@ -247,7 +333,9 @@ async def get_material_callback(callback: CallbackQuery):
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription_callback(callback: CallbackQuery):
     user = callback.from_user
-    name = user.first_name or (f"@{user.username}" if user.username else "друг")
+    name = user.first_name or (
+        f"@{user.username}" if user.username else "друг"
+    )
 
     logger.info(f"Пользователь {user.id} нажал «Проверить подписку»")
 
@@ -277,6 +365,8 @@ async def main():
     if not os.path.exists(PDF_PATH):
         logger.error(f"❌ Файл {PDF_PATH} не найден!")
         return
+
+    await start_fake_server()
 
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Бот запущен!")
